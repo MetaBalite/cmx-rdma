@@ -4,11 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+nixl = []
+
 [dependencies]
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+dashmap = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

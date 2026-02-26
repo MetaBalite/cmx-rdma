@@ -10,5 +10,9 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 libc = { workspace = true }
 
+[features]
+numa = []
+gpu = []
+
 [dev-dependencies]
 proptest = { workspace = true }

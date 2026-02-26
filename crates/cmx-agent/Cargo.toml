@@ -25,3 +25,6 @@ etcd-client = { workspace = true }
 dashmap = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }

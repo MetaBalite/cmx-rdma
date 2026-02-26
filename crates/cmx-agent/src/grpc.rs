@@ -16,11 +16,12 @@ use cmx_proto::{
     StoreResponse,
 };
 
+use crate::pressure::PRESSURE_REJECT;
+use crate::state::AgentState;
+
 /// Shared state for the gRPC service.
 pub struct CacheService {
-    pub allocator: Arc<BlockAllocator>,
-    pub index: Arc<BlockIndex>,
-    pub node_id: String,
+    pub state: Arc<AgentState>,
     pub start_time: Instant,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
@@ -28,16 +29,26 @@ pub struct CacheService {
 }
 
 impl CacheService {
-    pub fn new(allocator: Arc<BlockAllocator>, index: Arc<BlockIndex>, node_id: String) -> Self {
+    pub fn new(state: Arc<AgentState>) -> Self {
         Self {
-            allocator,
-            index,
-            node_id,
+            state,
             start_time: Instant::now(),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
         }
+    }
+
+    fn allocator(&self) -> &Arc<BlockAllocator> {
+        &self.state.allocator
+    }
+
+    fn index(&self) -> &Arc<BlockIndex> {
+        &self.state.index
+    }
+
+    fn node_id(&self) -> &str {
+        &self.state.node_id
     }
 
     fn monotonic_now() -> u64 {
@@ -57,26 +68,32 @@ fn parse_prefix_hash(bytes: &[u8]) -> Result<[u8; 16], Status> {
 
 #[tonic::async_trait]
 impl CmxCache for CacheService {
+    #[tracing::instrument(skip(self, request), fields(method = "lookup"))]
     async fn lookup(
         &self,
         request: Request<LookupRequest>,
     ) -> Result<Response<LookupResponse>, Status> {
+        let timer = Instant::now();
         let req = request.into_inner();
         let prefix_hash = parse_prefix_hash(&req.prefix_hash)?;
 
-        match self.index.lookup(&prefix_hash) {
+        match self.index().lookup(&prefix_hash) {
             Some(entry) => {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("cmx_cache_hits_total").increment(1);
                 let blocks = entry
                     .blocks
                     .iter()
                     .map(|loc| cmx_proto::BlockLocation {
-                        node_id: self.node_id.clone(),
+                        node_id: self.node_id().to_string(),
                         offset: loc.offset,
                         size: loc.block_size,
                         generation_id: loc.generation,
                     })
                     .collect();
+
+                metrics::histogram!("cmx_get_duration_seconds")
+                    .record(timer.elapsed().as_secs_f64());
 
                 Ok(Response::new(LookupResponse {
                     found: true,
@@ -85,7 +102,46 @@ impl CmxCache for CacheService {
                 }))
             }
             None => {
+                // Check remote index if available.
+                if let Some(remote_index) = &self.state.remote_index {
+                    if let Some(entries) = remote_index.lookup(&prefix_hash) {
+                        if let Some(first) = entries.first() {
+                            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                            metrics::counter!("cmx_cache_hits_total").increment(1);
+                            let blocks = vec![cmx_proto::BlockLocation {
+                                node_id: first.node_id.clone(),
+                                offset: first.offset,
+                                size: first.size,
+                                generation_id: first.generation,
+                            }];
+
+                            metrics::histogram!("cmx_get_duration_seconds")
+                                .record(timer.elapsed().as_secs_f64());
+
+                            return Ok(Response::new(LookupResponse {
+                                found: true,
+                                blocks,
+                                is_local: false,
+                            }));
+                        }
+                    }
+                }
+
+                // Check hash ring for preferred node suggestion.
+                if let Some(ring) = &self.state.hash_ring {
+                    let ring = ring.read().await;
+                    if let Some(preferred) = ring.preferred_node(&prefix_hash) {
+                        if preferred != self.node_id() {
+                            tracing::debug!(preferred_node = %preferred, "hash ring suggests remote node");
+                        }
+                    }
+                }
+
                 self.cache_misses.fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("cmx_cache_misses_total").increment(1);
+                metrics::histogram!("cmx_get_duration_seconds")
+                    .record(timer.elapsed().as_secs_f64());
+
                 Ok(Response::new(LookupResponse {
                     found: false,
                     blocks: vec![],
@@ -95,10 +151,23 @@ impl CmxCache for CacheService {
         }
     }
 
+    #[tracing::instrument(skip(self, request), fields(method = "store"))]
     async fn store(
         &self,
         request: Request<Streaming<StoreRequest>>,
     ) -> Result<Response<StoreResponse>, Status> {
+        // Check memory pressure before accepting store.
+        let pressure = self
+            .state
+            .pressure_level
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if pressure >= PRESSURE_REJECT {
+            return Err(Status::resource_exhausted(
+                "memory pressure too high — store rejected",
+            ));
+        }
+
+        let timer = Instant::now();
         let mut stream = request.into_inner();
 
         // First message must be the header.
@@ -128,7 +197,7 @@ impl CmxCache for CacheService {
 
         // Allocate a block and store data.
         let (loc, _handle) = self
-            .allocator
+            .allocator()
             .allocate_and_write(&data)
             .ok_or_else(|| Status::resource_exhausted("memory pool exhausted"))?;
 
@@ -136,10 +205,32 @@ impl CmxCache for CacheService {
 
         // Update the index. Evicted entries' hashes are returned (blocks freed by LRU).
         let evicted = self
-            .index
+            .index()
             .insert(prefix_hash, vec![loc], Self::monotonic_now());
-        self.evictions
-            .fetch_add(evicted.len() as u64, Ordering::Relaxed);
+        let eviction_count = evicted.len() as u64;
+        self.evictions.fetch_add(eviction_count, Ordering::Relaxed);
+        metrics::counter!("cmx_evictions_total").increment(eviction_count);
+
+        // Update pool metrics.
+        let pool_stats = self.allocator().stats();
+        metrics::gauge!("cmx_pool_used_blocks").set(pool_stats.used_blocks as f64);
+        metrics::gauge!("cmx_pool_total_bytes").set(pool_stats.total_bytes as f64);
+        metrics::gauge!("cmx_pool_used_bytes").set(pool_stats.used_bytes as f64);
+
+        // Publish block metadata to etcd (async, non-blocking).
+        if let Some(metadata) = &self.state.metadata {
+            let metadata = metadata.clone();
+            let ph = prefix_hash;
+            let offset = loc.offset;
+            let size = loc.block_size;
+            tokio::spawn(async move {
+                if let Err(e) = metadata.publish_block(&ph, offset, size, generation).await {
+                    tracing::warn!(error = %e, "failed to publish block to etcd");
+                }
+            });
+        }
+
+        metrics::histogram!("cmx_store_duration_seconds").record(timer.elapsed().as_secs_f64());
 
         tracing::debug!(
             prefix_hash = ?prefix_hash,
@@ -157,19 +248,22 @@ impl CmxCache for CacheService {
 
     type GetStream = ReceiverStream<Result<GetResponse, Status>>;
 
+    #[tracing::instrument(skip(self, request), fields(method = "get"))]
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<Self::GetStream>, Status> {
         let req = request.into_inner();
         let prefix_hash = parse_prefix_hash(&req.prefix_hash)?;
 
-        let entry = self.index.lookup(&prefix_hash).ok_or_else(|| {
+        let entry = self.index().lookup(&prefix_hash).ok_or_else(|| {
             self.cache_misses.fetch_add(1, Ordering::Relaxed);
+            metrics::counter!("cmx_cache_misses_total").increment(1);
             Status::not_found("prefix hash not found in cache")
         })?;
 
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("cmx_cache_hits_total").increment(1);
 
         let (tx, rx) = mpsc::channel(16);
-        let allocator = self.allocator.clone();
+        let allocator = self.allocator().clone();
 
         tokio::spawn(async move {
             // Send header first.
@@ -215,6 +309,7 @@ impl CmxCache for CacheService {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
+    #[tracing::instrument(skip(self, request), fields(method = "delete"))]
     async fn delete(
         &self,
         request: Request<DeleteRequest>,
@@ -222,7 +317,7 @@ impl CmxCache for CacheService {
         let req = request.into_inner();
         let prefix_hash = parse_prefix_hash(&req.prefix_hash)?;
 
-        match self.index.remove(&prefix_hash) {
+        match self.index().remove(&prefix_hash) {
             Some(entry) => {
                 let blocks_freed = entry.blocks.len() as u64;
                 for block_loc in &entry.blocks {
@@ -232,7 +327,7 @@ impl CmxCache for CacheService {
                         offset: block_loc.offset as usize,
                         size: block_loc.block_size as usize,
                     };
-                    self.allocator.deallocate(handle);
+                    self.allocator().deallocate(handle);
                 }
                 Ok(Response::new(DeleteResponse {
                     success: true,
@@ -246,11 +341,12 @@ impl CmxCache for CacheService {
         }
     }
 
+    #[tracing::instrument(skip(self, _request), fields(method = "stats"))]
     async fn stats(
         &self,
         _request: Request<StatsRequest>,
     ) -> Result<Response<StatsResponse>, Status> {
-        let pool_stats = self.allocator.stats();
+        let pool_stats = self.allocator().stats();
         Ok(Response::new(StatsResponse {
             total_blocks: pool_stats.total_blocks as u64,
             used_blocks: pool_stats.used_blocks as u64,
@@ -262,13 +358,14 @@ impl CmxCache for CacheService {
         }))
     }
 
+    #[tracing::instrument(skip(self, _request), fields(method = "health"))]
     async fn health(
         &self,
         _request: Request<HealthRequest>,
     ) -> Result<Response<HealthResponse>, Status> {
         Ok(Response::new(HealthResponse {
             healthy: true,
-            node_id: self.node_id.clone(),
+            node_id: self.node_id().to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             uptime_seconds: self.start_time.elapsed().as_secs(),
         }))

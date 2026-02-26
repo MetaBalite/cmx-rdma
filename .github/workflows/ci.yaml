@@ -46,6 +46,78 @@ jobs:
       - name: Test
         run: cargo test --all
 
+  miri:
+    name: Miri (unsafe memory checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust nightly with miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-miri-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run miri on cmx-memory
+        run: cargo +nightly miri test -p cmx-memory
+        continue-on-error: true
+
+      - name: Run miri on cmx-block-store
+        run: cargo +nightly miri test -p cmx-block-store
+        continue-on-error: true
+
+  integration:
+    name: Docker Compose Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          pip install pytest grpcio grpcio-tools
+          pip install -e python/cmx-client
+
+      - name: Build and start services
+        run: docker compose -f deploy/docker-compose.yaml up -d --build
+        timeout-minutes: 10
+
+      - name: Wait for services
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose -f deploy/docker-compose.yaml ps | grep -q "healthy"; then
+              echo "Services healthy"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Run multi-node integration tests
+        run: pytest tests/test_multi_node.py -v
+        continue-on-error: true
+
+      - name: Collect logs
+        if: always()
+        run: docker compose -f deploy/docker-compose.yaml logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f deploy/docker-compose.yaml down -v
+
   python:
     name: Python
     runs-on: ubuntu-latest

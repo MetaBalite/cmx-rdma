@@ -14,6 +14,8 @@ pub struct AgentConfig {
     pub transport: TransportSection,
     #[serde(default)]
     pub metrics: MetricsSection,
+    #[serde(default)]
+    pub placement: PlacementSection,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +29,9 @@ pub struct AgentSection {
     /// Log level.
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Log format: "text" or "json".
+    #[serde(default = "default_log_format")]
+    pub log_format: String,
 }
 
 impl Default for AgentSection {
@@ -35,6 +40,7 @@ impl Default for AgentSection {
             node_id: String::new(),
             listen_addr: default_listen_addr(),
             log_level: default_log_level(),
+            log_format: default_log_format(),
         }
     }
 }
@@ -47,6 +53,18 @@ pub struct MemorySection {
     /// Block size in bytes (default: 256 KiB).
     #[serde(default = "default_block_size")]
     pub block_size: usize,
+    /// NUMA node to bind memory to (None = OS default).
+    #[serde(default)]
+    pub numa_node: Option<u32>,
+    /// Memory pressure warning threshold (fraction of pool used, default 0.75).
+    #[serde(default = "default_pressure_warn")]
+    pub pressure_warn: f64,
+    /// Memory pressure critical threshold (default 0.90).
+    #[serde(default = "default_pressure_critical")]
+    pub pressure_critical: f64,
+    /// Memory pressure reject threshold (default 0.95).
+    #[serde(default = "default_pressure_reject")]
+    pub pressure_reject: f64,
 }
 
 impl Default for MemorySection {
@@ -54,6 +72,10 @@ impl Default for MemorySection {
         Self {
             total_size: default_total_size(),
             block_size: default_block_size(),
+            numa_node: None,
+            pressure_warn: default_pressure_warn(),
+            pressure_critical: default_pressure_critical(),
+            pressure_reject: default_pressure_reject(),
         }
     }
 }
@@ -69,6 +91,9 @@ pub struct MetadataSection {
     /// TTL for metadata entries in seconds.
     #[serde(default = "default_ttl_seconds")]
     pub ttl_seconds: u64,
+    /// Lease TTL for node registration in seconds.
+    #[serde(default = "default_lease_ttl_seconds")]
+    pub lease_ttl_seconds: u64,
 }
 
 impl Default for MetadataSection {
@@ -77,6 +102,7 @@ impl Default for MetadataSection {
             etcd_endpoints: default_etcd_endpoints(),
             key_prefix: default_key_prefix(),
             ttl_seconds: default_ttl_seconds(),
+            lease_ttl_seconds: default_lease_ttl_seconds(),
         }
     }
 }
@@ -111,11 +137,29 @@ impl Default for MetricsSection {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PlacementSection {
+    /// Number of virtual nodes per physical node in the hash ring.
+    #[serde(default = "default_vnodes_per_node")]
+    pub vnodes_per_node: u32,
+}
+
+impl Default for PlacementSection {
+    fn default() -> Self {
+        Self {
+            vnodes_per_node: default_vnodes_per_node(),
+        }
+    }
+}
+
 fn default_listen_addr() -> String {
     "0.0.0.0:50051".into()
 }
 fn default_log_level() -> String {
     "info".into()
+}
+fn default_log_format() -> String {
+    "text".into()
 }
 fn default_total_size() -> usize {
     1024 * 1024 * 1024 // 1 GiB
@@ -132,11 +176,26 @@ fn default_key_prefix() -> String {
 fn default_ttl_seconds() -> u64 {
     3600
 }
+fn default_lease_ttl_seconds() -> u64 {
+    30
+}
 fn default_transport_backend() -> String {
     "mock".into()
 }
 fn default_metrics_addr() -> String {
     "0.0.0.0:9090".into()
+}
+fn default_vnodes_per_node() -> u32 {
+    128
+}
+fn default_pressure_warn() -> f64 {
+    0.75
+}
+fn default_pressure_critical() -> f64 {
+    0.90
+}
+fn default_pressure_reject() -> f64 {
+    0.95
 }
 
 impl AgentConfig {
@@ -155,6 +214,7 @@ impl AgentConfig {
             metadata: MetadataSection::default(),
             transport: TransportSection::default(),
             metrics: MetricsSection::default(),
+            placement: PlacementSection::default(),
         }
     }
 
@@ -193,6 +253,10 @@ mod tests {
         assert_eq!(config.agent.listen_addr, "0.0.0.0:50051");
         assert_eq!(config.memory.block_size, 256 * 1024);
         assert_eq!(config.transport.backend, "mock");
+        assert_eq!(config.agent.log_format, "text");
+        assert_eq!(config.metadata.lease_ttl_seconds, 30);
+        assert_eq!(config.placement.vnodes_per_node, 128);
+        assert!((config.memory.pressure_warn - 0.75).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -201,17 +265,38 @@ mod tests {
             [agent]
             node_id = "test-node"
             listen_addr = "127.0.0.1:50051"
+            log_format = "json"
 
             [memory]
             total_size = 536870912
             block_size = 131072
+
+            [placement]
+            vnodes_per_node = 64
         "#;
 
         let config: AgentConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.agent.node_id, "test-node");
+        assert_eq!(config.agent.log_format, "json");
         assert_eq!(config.memory.total_size, 512 * 1024 * 1024);
         assert_eq!(config.memory.block_size, 128 * 1024);
+        assert_eq!(config.placement.vnodes_per_node, 64);
         // Defaults for missing sections
         assert_eq!(config.transport.backend, "mock");
+    }
+
+    #[test]
+    fn test_parse_toml_with_pressure() {
+        let toml = r#"
+            [memory]
+            pressure_warn = 0.70
+            pressure_critical = 0.85
+            pressure_reject = 0.92
+        "#;
+
+        let config: AgentConfig = toml::from_str(toml).unwrap();
+        assert!((config.memory.pressure_warn - 0.70).abs() < f64::EPSILON);
+        assert!((config.memory.pressure_critical - 0.85).abs() < f64::EPSILON);
+        assert!((config.memory.pressure_reject - 0.92).abs() < f64::EPSILON);
     }
 }

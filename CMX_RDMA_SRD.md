@@ -1,6 +1,6 @@
 Software Requirements Document: RDMA-Based CMX (Context Memory Storage)
 1. Objective
-To implement a distributed, disaggregated KV Cache sharing layer that replicates the functionality of NVIDIA CMX using standard RDMA (Remote Direct Memory Access) protocols. This system enables multiple inference nodes to share "context memory" to reduce Time-to-First-Token (TTFT) for long-context LLM tasks.
+To implement a distributed, disaggregated KV Cache sharing layer as an open-source alternative to NVIDIA CMX, using standard RDMA (Remote Direct Memory Access) protocols. This system enables multiple inference nodes to share "context memory" to reduce Time-to-First-Token (TTFT) for long-context LLM tasks.
 2. Hardware & Infrastructure Requirements
 The software layer relies on a high-performance network fabric to bypass CPU overhead.
 Network Protocol: Must utilize InfiniBand or RoCE v2 (RDMA over Converged Ethernet) to provide the lossless transport required for large KV tensor movement. Use the NVIDIA RoCE Configuration Guide for switch-level setup.
