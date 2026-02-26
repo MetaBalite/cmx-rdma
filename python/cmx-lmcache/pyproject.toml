@@ -1,0 +1,16 @@
+[project]
+name = "cmx-lmcache"
+version = "0.1.0"
+description = "LMCache RemoteConnector for cmx-rdma"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = [
+    "cmx-client>=0.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cmx_lmcache"]

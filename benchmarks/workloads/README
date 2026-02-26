@@ -1,0 +1,6 @@
+Workload data files for benchmarks.
+
+Place ShareGPT-style workload JSONLs here for realistic benchmarking.
+Example: shareGPT.jsonl
+
+These are not checked into git due to size.

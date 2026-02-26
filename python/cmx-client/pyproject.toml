@@ -1,0 +1,18 @@
+[project]
+name = "cmx-client"
+version = "0.1.0"
+description = "Python gRPC client for cmx-rdma cache agent"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = [
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "protobuf>=4.25.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cmx_client"]

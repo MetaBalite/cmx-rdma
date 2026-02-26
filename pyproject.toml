@@ -1,0 +1,9 @@
+[project]
+name = "cmx-rdma"
+version = "0.1.0"
+description = "RDMA-based distributed KV cache sharing for LLM inference"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+
+[tool.uv.workspace]
+members = ["python/cmx-client", "python/cmx-lmcache", "python/cmx-sglang"]

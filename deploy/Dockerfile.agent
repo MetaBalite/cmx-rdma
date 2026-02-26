@@ -1,0 +1,31 @@
+# Build stage
+FROM rust:1.83-bookworm AS builder
+
+WORKDIR /build
+
+# Install protobuf compiler
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock* ./
+COPY crates/ crates/
+
+# Build release binary
+RUN cargo build --release --bin cmx-agent
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libibverbs1 \
+    librdmacm1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/cmx-agent /usr/local/bin/cmx-agent
+COPY deploy/config/cmx-agent.toml /etc/cmx/cmx-agent.toml
+
+EXPOSE 50051 9090
+
+ENTRYPOINT ["cmx-agent"]
+CMD ["--config", "/etc/cmx/cmx-agent.toml"]

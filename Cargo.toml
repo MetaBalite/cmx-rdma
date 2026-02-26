@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cmx-proto",
+    "crates/cmx-memory",
+    "crates/cmx-block-store",
+    "crates/cmx-transport",
+    "crates/cmx-agent",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/metabalite/cmx-rdma"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
+# gRPC
+tonic = "0.12"
+tonic-build = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# System / FFI
+libc = "0.2"
+
+# Concurrency
+dashmap = "6"
+parking_lot = "0.12"
+
+# Hashing / integrity
+sha2 = "0.10"
+crc32fast = "1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Metrics
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# etcd
+etcd-client = "0.14"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Testing
+proptest = "1"
+
+# Internal crates
+cmx-proto = { path = "crates/cmx-proto" }
+cmx-memory = { path = "crates/cmx-memory" }
+cmx-block-store = { path = "crates/cmx-block-store" }
+cmx-transport = { path = "crates/cmx-transport" }

@@ -1,0 +1,29 @@
+name: Nightly RDMA Tests
+
+on:
+  schedule:
+    # Run at 2 AM UTC daily
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  rdma-tests:
+    name: RDMA Integration Tests
+    runs-on: [self-hosted, rdma]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Run RDMA tests
+        run: cargo test --release -- --ignored rdma
+        env:
+          CMX_TEST_RDMA: "1"

@@ -1,0 +1,104 @@
+syntax = "proto3";
+package cmx;
+
+service CmxCache {
+  rpc Lookup(LookupRequest) returns (LookupResponse);
+  rpc Store(stream StoreRequest) returns (StoreResponse);
+  rpc Get(GetRequest) returns (stream GetResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc Stats(StatsRequest) returns (StatsResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// Lookup: prefix_hash → block locations
+message LookupRequest {
+  bytes prefix_hash = 1;       // SHA-256 truncated to 128 bits (16 bytes)
+  uint32 num_blocks = 2;       // Expected number of blocks
+}
+
+message BlockLocation {
+  string node_id = 1;          // Node that holds the block
+  uint64 offset = 2;           // Offset within the node's memory pool
+  uint64 size = 3;             // Block size in bytes
+  uint64 generation_id = 4;    // Generation counter for staleness detection
+}
+
+message LookupResponse {
+  bool found = 1;
+  repeated BlockLocation blocks = 2;
+  bool is_local = 3;           // True if blocks are on this node
+}
+
+// Store: client-streaming for large KV tensors
+message StoreRequest {
+  oneof payload {
+    StoreHeader header = 1;
+    bytes data = 2;            // Raw KV tensor data chunk
+  }
+}
+
+message StoreHeader {
+  bytes prefix_hash = 1;
+  uint32 num_blocks = 2;
+  uint64 total_size = 3;      // Total size of all blocks in bytes
+  string model_id = 4;        // Model identifier for cache isolation
+}
+
+message StoreResponse {
+  bool success = 1;
+  string error_message = 2;
+  uint64 generation_id = 3;
+}
+
+// Get: server-streaming for large KV tensors
+message GetRequest {
+  bytes prefix_hash = 1;
+  uint32 num_blocks = 2;
+  string source_node_id = 3;  // Hint: which node to fetch from (from Lookup)
+}
+
+message GetResponse {
+  oneof payload {
+    GetHeader header = 1;
+    bytes data = 2;            // Raw KV tensor data chunk
+  }
+}
+
+message GetHeader {
+  uint64 total_size = 1;
+  uint32 num_blocks = 2;
+  uint64 generation_id = 3;
+}
+
+// Delete
+message DeleteRequest {
+  bytes prefix_hash = 1;
+}
+
+message DeleteResponse {
+  bool success = 1;
+  uint64 blocks_freed = 2;
+}
+
+// Stats
+message StatsRequest {}
+
+message StatsResponse {
+  uint64 total_blocks = 1;
+  uint64 used_blocks = 2;
+  uint64 cache_hits = 3;
+  uint64 cache_misses = 4;
+  uint64 evictions = 5;
+  uint64 memory_used_bytes = 6;
+  uint64 memory_total_bytes = 7;
+}
+
+// Health
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+  string node_id = 2;
+  string version = 3;
+  uint64 uptime_seconds = 4;
+}

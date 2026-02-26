@@ -1,0 +1,31 @@
+# cmx-agent configuration
+
+[agent]
+# Unique node identifier (auto-generated from hostname if empty)
+node_id = ""
+# gRPC listen address
+listen_addr = "0.0.0.0:50051"
+# Log level: trace, debug, info, warn, error
+log_level = "info"
+
+[memory]
+# Total memory pool size in bytes (default: 1 GiB)
+total_size = 1073741824
+# Block size in bytes (default: 256 KiB — fits 16 tokens of typical KV cache)
+block_size = 262144
+
+[metadata]
+# etcd endpoints (comma-separated)
+etcd_endpoints = ["http://localhost:2379"]
+# Key prefix for all cmx metadata in etcd
+key_prefix = "/cmx/blocks"
+# TTL for metadata entries in seconds (default: 1 hour)
+ttl_seconds = 3600
+
+[transport]
+# Transport backend: "nixl" (auto-negotiates IB/RoCE/TCP) or "mock" (testing)
+backend = "mock"
+
+[metrics]
+# Prometheus metrics endpoint
+listen_addr = "0.0.0.0:9090"

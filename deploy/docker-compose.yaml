@@ -1,0 +1,46 @@
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    command:
+      - etcd
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+    ports:
+      - "2379:2379"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  agent-1:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.agent
+    command: ["--config", "/etc/cmx/cmx-agent.toml"]
+    environment:
+      CMX_NODE_ID: agent-1
+      CMX_LISTEN_ADDR: "0.0.0.0:50051"
+      CMX_ETCD_ENDPOINTS: "http://etcd:2379"
+    ports:
+      - "50051:50051"
+      - "9091:9090"
+    depends_on:
+      etcd:
+        condition: service_healthy
+
+  agent-2:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.agent
+    command: ["--config", "/etc/cmx/cmx-agent.toml"]
+    environment:
+      CMX_NODE_ID: agent-2
+      CMX_LISTEN_ADDR: "0.0.0.0:50051"
+      CMX_ETCD_ENDPOINTS: "http://etcd:2379"
+    ports:
+      - "50052:50051"
+      - "9092:9090"
+    depends_on:
+      etcd:
+        condition: service_healthy
