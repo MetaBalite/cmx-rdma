@@ -157,10 +157,7 @@ impl CmxCache for CacheService {
 
     type GetStream = ReceiverStream<Result<GetResponse, Status>>;
 
-    async fn get(
-        &self,
-        request: Request<GetRequest>,
-    ) -> Result<Response<Self::GetStream>, Status> {
+    async fn get(&self, request: Request<GetRequest>) -> Result<Response<Self::GetStream>, Status> {
         let req = request.into_inner();
         let prefix_hash = parse_prefix_hash(&req.prefix_hash)?;
 

@@ -53,9 +53,8 @@ impl BlockHeader {
     pub fn write_to(&self, dst: &mut [u8]) {
         assert!(dst.len() >= Self::SIZE);
         // Safety: BlockHeader is repr(C) with no padding concerns for these field types.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(self as *const Self as *const u8, Self::SIZE)
-        };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, Self::SIZE) };
         dst[..Self::SIZE].copy_from_slice(bytes);
     }
 

@@ -187,7 +187,8 @@ impl MemoryPool {
         assert!(
             (handle.block_index as usize) < self.total_blocks,
             "block_index {} out of range (total_blocks = {})",
-            handle.block_index, self.total_blocks
+            handle.block_index,
+            self.total_blocks
         );
 
         let mut free = self.free_list.lock();
@@ -200,10 +201,7 @@ impl MemoryPool {
     ///
     /// Panics if the handle does not belong to this pool.
     pub fn get_ptr(&self, handle: &BlockHandle) -> *mut u8 {
-        assert_eq!(
-            handle.pool_id, self.pool_id,
-            "BlockHandle pool_id mismatch"
-        );
+        assert_eq!(handle.pool_id, self.pool_id, "BlockHandle pool_id mismatch");
         // SAFETY: `handle.offset` is always `block_index * block_size` and was
         // validated at allocation time, so it is within the mapped region.
         unsafe { self.base_ptr.add(handle.offset) }
@@ -270,12 +268,7 @@ impl Drop for MemoryPool {
     fn drop(&mut self) {
         // SAFETY: `self.base_ptr` was obtained from a successful `mmap` call
         // with size `self.total_size`. We unmap the entire region.
-        let ret = unsafe {
-            libc::munmap(
-                self.base_ptr as *mut libc::c_void,
-                self.total_size,
-            )
-        };
+        let ret = unsafe { libc::munmap(self.base_ptr as *mut libc::c_void, self.total_size) };
         if ret != 0 {
             tracing::error!(
                 error = %std::io::Error::last_os_error(),

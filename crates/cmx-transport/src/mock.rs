@@ -161,9 +161,7 @@ mod tests {
         let peer = PeerId("node-2".to_string());
         transport.connect(&peer, "127.0.0.1:9001").await.unwrap();
 
-        let lkey = transport
-            .register_memory(std::ptr::null_mut(), 0)
-            .unwrap();
+        let lkey = transport.register_memory(std::ptr::null_mut(), 0).unwrap();
 
         // Write data to remote
         let src_data: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
