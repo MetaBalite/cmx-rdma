@@ -1,0 +1,24 @@
+[Unit]
+Description=CMX-RDMA Cache Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cmx-agent --config /etc/cmx/cmx-agent.toml
+Restart=on-failure
+RestartSec=5
+LimitMEMLOCK=infinity
+LimitNOFILE=65536
+
+# Run as dedicated user
+User=cmx
+Group=cmx
+
+# Environment overrides
+Environment=CMX_NODE_ID=%H
+Environment=CMX_LISTEN_ADDR=0.0.0.0:50051
+EnvironmentFile=-/etc/cmx/cmx-agent.env
+
+[Install]
+WantedBy=multi-user.target

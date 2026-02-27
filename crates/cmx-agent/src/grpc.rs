@@ -8,12 +8,14 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
+use sha2::{Digest, Sha256};
+
 use cmx_block_store::{BlockAllocator, BlockIndex};
 use cmx_proto::cmx_cache_server::CmxCache;
 use cmx_proto::{
-    DeleteRequest, DeleteResponse, GetHeader, GetRequest, GetResponse, HealthRequest,
-    HealthResponse, LookupRequest, LookupResponse, StatsRequest, StatsResponse, StoreRequest,
-    StoreResponse,
+    BatchLookupRequest, BatchLookupResponse, DeleteRequest, DeleteResponse, GetHeader, GetRequest,
+    GetResponse, HealthRequest, HealthResponse, LookupRequest, LookupResponse, StatsRequest,
+    StatsResponse, StoreRequest, StoreResponse,
 };
 
 use crate::pressure::PRESSURE_REJECT;
@@ -66,6 +68,21 @@ fn parse_prefix_hash(bytes: &[u8]) -> Result<[u8; 16], Status> {
         .map_err(|_| Status::invalid_argument("prefix_hash must be exactly 16 bytes"))
 }
 
+/// Build a composite index key from model_id + prefix_hash.
+/// Empty model_id = backwards-compatible (returns prefix_hash as-is).
+fn composite_key(model_id: &str, prefix_hash: &[u8; 16]) -> [u8; 16] {
+    if model_id.is_empty() {
+        return *prefix_hash;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(model_id.as_bytes());
+    hasher.update(prefix_hash);
+    let digest = hasher.finalize();
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&digest[..16]);
+    key
+}
+
 #[tonic::async_trait]
 impl CmxCache for CacheService {
     #[tracing::instrument(skip(self, request), fields(method = "lookup"))]
@@ -76,8 +93,9 @@ impl CmxCache for CacheService {
         let timer = Instant::now();
         let req = request.into_inner();
         let prefix_hash = parse_prefix_hash(&req.prefix_hash)?;
+        let index_key = composite_key(&req.model_id, &prefix_hash);
 
-        match self.index().lookup(&prefix_hash) {
+        match self.index().lookup(&index_key) {
             Some(entry) => {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 metrics::counter!("cmx_cache_hits_total").increment(1);
@@ -104,7 +122,7 @@ impl CmxCache for CacheService {
             None => {
                 // Check remote index if available.
                 if let Some(remote_index) = &self.state.remote_index {
-                    if let Some(entries) = remote_index.lookup(&prefix_hash) {
+                    if let Some(entries) = remote_index.lookup(&index_key) {
                         if let Some(first) = entries.first() {
                             self.cache_hits.fetch_add(1, Ordering::Relaxed);
                             metrics::counter!("cmx_cache_hits_total").increment(1);
@@ -130,7 +148,7 @@ impl CmxCache for CacheService {
                 // Check hash ring for preferred node suggestion.
                 if let Some(ring) = &self.state.hash_ring {
                     let ring = ring.read().await;
-                    if let Some(preferred) = ring.preferred_node(&prefix_hash) {
+                    if let Some(preferred) = ring.preferred_node(&index_key) {
                         if preferred != self.node_id() {
                             tracing::debug!(preferred_node = %preferred, "hash ring suggests remote node");
                         }
@@ -149,6 +167,49 @@ impl CmxCache for CacheService {
                 }))
             }
         }
+    }
+
+    #[tracing::instrument(skip(self, request), fields(method = "batch_lookup"))]
+    async fn batch_lookup(
+        &self,
+        request: Request<BatchLookupRequest>,
+    ) -> Result<Response<BatchLookupResponse>, Status> {
+        let timer = Instant::now();
+        let req = request.into_inner();
+
+        let mut found = Vec::with_capacity(req.prefix_hashes.len());
+        let mut blocks = Vec::new();
+
+        for raw_hash in &req.prefix_hashes {
+            let prefix_hash = parse_prefix_hash(raw_hash)?;
+            let index_key = composite_key(&req.model_id, &prefix_hash);
+
+            match self.index().lookup(&index_key) {
+                Some(entry) => {
+                    self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    metrics::counter!("cmx_cache_hits_total").increment(1);
+                    found.push(true);
+                    for loc in &entry.blocks {
+                        blocks.push(cmx_proto::BlockLocation {
+                            node_id: self.node_id().to_string(),
+                            offset: loc.offset,
+                            size: loc.block_size,
+                            generation_id: loc.generation,
+                        });
+                    }
+                }
+                None => {
+                    self.cache_misses.fetch_add(1, Ordering::Relaxed);
+                    metrics::counter!("cmx_cache_misses_total").increment(1);
+                    found.push(false);
+                }
+            }
+        }
+
+        metrics::histogram!("cmx_batch_lookup_duration_seconds")
+            .record(timer.elapsed().as_secs_f64());
+
+        Ok(Response::new(BatchLookupResponse { found, blocks }))
     }
 
     #[tracing::instrument(skip(self, request), fields(method = "store"))]
@@ -180,6 +241,7 @@ impl CmxCache for CacheService {
         };
 
         let prefix_hash = parse_prefix_hash(&header.prefix_hash)?;
+        let index_key = composite_key(&header.model_id, &prefix_hash);
 
         // Collect all data chunks.
         let mut data = Vec::with_capacity(header.total_size as usize);
@@ -206,7 +268,7 @@ impl CmxCache for CacheService {
         // Update the index. Evicted entries' hashes are returned (blocks freed by LRU).
         let evicted = self
             .index()
-            .insert(prefix_hash, vec![loc], Self::monotonic_now());
+            .insert(index_key, vec![loc], Self::monotonic_now());
         let eviction_count = evicted.len() as u64;
         self.evictions.fetch_add(eviction_count, Ordering::Relaxed);
         metrics::counter!("cmx_evictions_total").increment(eviction_count);
@@ -220,7 +282,7 @@ impl CmxCache for CacheService {
         // Publish block metadata to etcd (async, non-blocking).
         if let Some(metadata) = &self.state.metadata {
             let metadata = metadata.clone();
-            let ph = prefix_hash;
+            let ph = index_key;
             let offset = loc.offset;
             let size = loc.block_size;
             tokio::spawn(async move {
@@ -233,7 +295,7 @@ impl CmxCache for CacheService {
         metrics::histogram!("cmx_store_duration_seconds").record(timer.elapsed().as_secs_f64());
 
         tracing::debug!(
-            prefix_hash = ?prefix_hash,
+            index_key = ?index_key,
             total_size = data.len(),
             generation,
             "stored KV cache block"
@@ -252,8 +314,9 @@ impl CmxCache for CacheService {
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<Self::GetStream>, Status> {
         let req = request.into_inner();
         let prefix_hash = parse_prefix_hash(&req.prefix_hash)?;
+        let index_key = composite_key(&req.model_id, &prefix_hash);
 
-        let entry = self.index().lookup(&prefix_hash).ok_or_else(|| {
+        let entry = self.index().lookup(&index_key).ok_or_else(|| {
             self.cache_misses.fetch_add(1, Ordering::Relaxed);
             metrics::counter!("cmx_cache_misses_total").increment(1);
             Status::not_found("prefix hash not found in cache")

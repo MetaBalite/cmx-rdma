@@ -3,6 +3,7 @@ package cmx;
 
 service CmxCache {
   rpc Lookup(LookupRequest) returns (LookupResponse);
+  rpc BatchLookup(BatchLookupRequest) returns (BatchLookupResponse);
   rpc Store(stream StoreRequest) returns (StoreResponse);
   rpc Get(GetRequest) returns (stream GetResponse);
   rpc Delete(DeleteRequest) returns (DeleteResponse);
@@ -14,6 +15,18 @@ service CmxCache {
 message LookupRequest {
   bytes prefix_hash = 1;       // SHA-256 truncated to 128 bits (16 bytes)
   uint32 num_blocks = 2;       // Expected number of blocks
+  string model_id = 3;         // Model identifier for cache isolation
+}
+
+// BatchLookup: check N prefix hashes in one call
+message BatchLookupRequest {
+  repeated bytes prefix_hashes = 1;  // N × 16-byte hashes
+  string model_id = 2;
+}
+
+message BatchLookupResponse {
+  repeated bool found = 1;           // found[i] = has prefix_hashes[i]
+  repeated BlockLocation blocks = 2; // flat list of all found blocks
 }
 
 message BlockLocation {
@@ -55,6 +68,7 @@ message GetRequest {
   bytes prefix_hash = 1;
   uint32 num_blocks = 2;
   string source_node_id = 3;  // Hint: which node to fetch from (from Lookup)
+  string model_id = 4;        // Model identifier for cache isolation
 }
 
 message GetResponse {

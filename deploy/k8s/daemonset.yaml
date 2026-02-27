@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cmx-agent
+  namespace: cmx
+  labels:
+    app: cmx-agent
+spec:
+  selector:
+    matchLabels:
+      app: cmx-agent
+  template:
+    metadata:
+      labels:
+        app: cmx-agent
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: cmx-agent
+          image: ghcr.io/metabalite/cmx-agent:latest
+          args: ["--config", "/etc/cmx/cmx-agent.toml"]
+          ports:
+            - containerPort: 50051
+              name: grpc
+              hostPort: 50051
+            - containerPort: 9090
+              name: metrics
+              hostPort: 9090
+          env:
+            - name: CMX_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CMX_LISTEN_ADDR
+              value: "0.0.0.0:50051"
+            - name: CMX_ETCD_ENDPOINTS
+              valueFrom:
+                configMapKeyRef:
+                  name: cmx-config
+                  key: etcd_endpoints
+            - name: CMX_MODEL_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: cmx-config
+                  key: model_id
+                  optional: true
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cmx
+              readOnly: true
+            - name: hugepages
+              mountPath: /dev/hugepages
+          readinessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: cmx-config
+        - name: hugepages
+          emptyDir:
+            medium: HugePages
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cmx-config
+  namespace: cmx
+data:
+  etcd_endpoints: "http://etcd.cmx.svc:2379"
+  model_id: ""
+  cmx-agent.toml: |
+    [agent]
+    node_id = ""
+    listen_addr = "0.0.0.0:50051"
+    log_level = "info"
+
+    [memory]
+    total_size = 1073741824
+    block_size = 262144
+
+    [metadata]
+    etcd_endpoints = ["http://etcd.cmx.svc:2379"]
+    key_prefix = "/cmx/blocks"
+    ttl_seconds = 3600
+
+    [transport]
+    backend = "mock"
+
+    [metrics]
+    listen_addr = "0.0.0.0:9090"

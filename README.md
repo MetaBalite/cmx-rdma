@@ -148,13 +148,19 @@ cmx-rdma/
 │   └── cmx-proto/                # Protobuf definitions
 │
 ├── python/                       # Python (client SDKs only)
-│   ├── cmx-client/               # Core Python client
-│   ├── cmx-lmcache/              # LMCache connector
-│   └── cmx-sglang/               # SGLang connector
+│   ├── cmx-client/               # Core Python client (sync + async)
+│   ├── cmx-vllm/                 # Direct vLLM KV connector
+│   ├── cmx-sglang/               # Direct SGLang HiCache backend
+│   └── cmx-lmcache/              # LMCache connector (optional)
 │
 ├── deploy/                       # Deployment configs
 │   ├── docker-compose.yaml
 │   ├── Dockerfile.agent
+│   ├── k8s/
+│   │   └── daemonset.yaml        # K8s DaemonSet + ConfigMap
+│   ├── slurm/
+│   │   ├── cmx-agent.service     # systemd unit for Slurm nodes
+│   │   └── launch_agents.sh      # srun wrapper
 │   └── config/
 │       └── cmx-agent.toml
 │
@@ -168,7 +174,66 @@ cmx-rdma/
 
 ---
 
-## 4. Implementation Phases
+## 4. Integration
+
+### 4.1 vLLM (Direct Connector)
+
+```bash
+pip install cmx-vllm
+
+vllm serve "meta-llama/Llama-3-8B" --kv-transfer-config '{
+  "kv_connector": "CmxRdmaConnector",
+  "kv_role": "kv_both",
+  "kv_connector_module_path": "cmx_vllm.connector"
+}'
+```
+
+Set `CMX_AGENT_ADDR` and `CMX_MODEL_ID` environment variables to configure.
+
+### 4.2 SGLang (HiCache Backend)
+
+```bash
+pip install cmx-sglang
+
+python -m sglang.launch_server --model "meta-llama/Llama-3-8B" \
+  --enable-hicache --hicache-storage-backend cmx \
+  --hicache-storage-url cmx://agent:50051
+```
+
+### 4.3 LMCache (Indirect, via StorageBackendInterface)
+
+```python
+from cmx_lmcache import CmxRemoteConnector
+
+connector = CmxRemoteConnector("cmx://agent:50051", model_id="llama-3-8b")
+connector.put("prefix:abc", kv_tensor_bytes)
+data = connector.get("prefix:abc")
+```
+
+### 4.4 Kubernetes Deployment
+
+```bash
+kubectl create namespace cmx
+kubectl apply -f deploy/k8s/daemonset.yaml
+```
+
+This deploys a DaemonSet (one cmx-agent per node) with host networking,
+a ConfigMap for configuration, and gRPC health probes.
+
+### 4.5 Slurm Deployment
+
+```bash
+# As a systemd service on each node:
+sudo cp deploy/slurm/cmx-agent.service /etc/systemd/system/
+sudo systemctl enable --now cmx-agent
+
+# Or via srun across allocated nodes:
+salloc -N 4 srun bash deploy/slurm/launch_agents.sh
+```
+
+---
+
+## 5. Implementation Phases
 
 ### Phase 1: Foundation MVP (Weeks 1-8)
 Full cluster of inference nodes (vLLM + SGLang) sharing KV cache over any available transport, with measurable TTFT reduction.
@@ -187,7 +252,7 @@ TensorRT-LLM connector, llm-d integration, management console, documentation.
 
 ---
 
-## 5. Risk Mitigation
+## 6. Risk Mitigation
 
 | Risk | Impact | Mitigation |
 |---|---|---|

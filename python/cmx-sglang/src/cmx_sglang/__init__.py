@@ -1,4 +1,6 @@
-"""SGLang cache backend connector for cmx-rdma (Phase 2)."""
+"""SGLang HiCache storage backend for cmx-rdma."""
 
-__all__: list[str] = []
+from cmx_sglang.backend import CmxHiCacheStorage
+
+__all__ = ["CmxHiCacheStorage"]
 __version__ = "0.1.0"

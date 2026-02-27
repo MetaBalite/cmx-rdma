@@ -11,10 +11,10 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
 from typing import Optional, Protocol, runtime_checkable
 
 from cmx_client import CmxClient
+from cmx_client.hashing import hash_key
 
 
 @runtime_checkable
@@ -29,11 +29,6 @@ class StorageBackendInterface(Protocol):
     def put(self, key: str, kv_tensors: bytes) -> None: ...
     def get(self, key: str) -> Optional[bytes]: ...
     def close(self) -> None: ...
-
-
-def _hash_key(key: str) -> bytes:
-    """Convert an LMCache string key to a 16-byte prefix hash."""
-    return hashlib.sha256(key.encode()).digest()[:16]
 
 
 class CmxRemoteConnector:
@@ -53,13 +48,13 @@ class CmxRemoteConnector:
 
     def contains(self, key: str) -> bool:
         """Check if a key exists in the cache."""
-        prefix_hash = _hash_key(key)
+        prefix_hash = hash_key(key)
         result = self._client.lookup(prefix_hash)
         return result.found
 
     def put(self, key: str, kv_tensors: bytes) -> None:
         """Store KV tensors under the given key."""
-        prefix_hash = _hash_key(key)
+        prefix_hash = hash_key(key)
         success, _ = self._client.store(
             prefix_hash=prefix_hash,
             data=kv_tensors,
@@ -70,7 +65,7 @@ class CmxRemoteConnector:
 
     def get(self, key: str) -> Optional[bytes]:
         """Retrieve KV tensors for the given key."""
-        prefix_hash = _hash_key(key)
+        prefix_hash = hash_key(key)
         result = self._client.lookup(prefix_hash)
         if not result.found:
             return None
