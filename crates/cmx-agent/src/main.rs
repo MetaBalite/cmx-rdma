@@ -7,6 +7,8 @@ use anyhow::Context;
 use clap::Parser;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
+#[cfg(feature = "profiling")]
+use tracing_subscriber::prelude::*;
 
 use cmx_agent::config::AgentConfig;
 use cmx_agent::grpc::CacheService;
@@ -47,6 +49,47 @@ async fn main() -> anyhow::Result<()> {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(&config.agent.log_level));
 
+    // When the `profiling` feature is enabled and CMX_PROFILE=1, attach a
+    // FlameLayer that writes folded stack traces to ./tracing.folded.
+    #[cfg(feature = "profiling")]
+    let _flame_guard = if std::env::var("CMX_PROFILE").is_ok() {
+        let (flame_layer, guard) =
+            tracing_flame::FlameLayer::with_file("./tracing.folded").unwrap();
+        if log_format == "json" {
+            tracing_subscriber::registry()
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_target(true)
+                        .json(),
+                )
+                .with(env_filter)
+                .with(flame_layer)
+                .init();
+        } else {
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::fmt::layer().with_target(true))
+                .with(env_filter)
+                .with(flame_layer)
+                .init();
+        }
+        Some(guard)
+    } else {
+        if log_format == "json" {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_target(true)
+                .json()
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_target(true)
+                .init();
+        }
+        None
+    };
+
+    #[cfg(not(feature = "profiling"))]
     if log_format == "json" {
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
@@ -58,6 +101,14 @@ async fn main() -> anyhow::Result<()> {
             .with_env_filter(env_filter)
             .with_target(true)
             .init();
+    }
+
+    // Validate config before proceeding.
+    if let Err(errors) = config.validate() {
+        for e in &errors {
+            tracing::error!("config validation error: {e}");
+        }
+        anyhow::bail!("configuration has {} validation error(s)", errors.len());
     }
 
     config.resolve_node_id();
@@ -159,6 +210,9 @@ async fn main() -> anyhow::Result<()> {
         hash_ring: Some(hash_ring),
     });
 
+    // Clone allocator for shutdown handler before moving agent_state.
+    let allocator_for_shutdown = agent_state.allocator.clone();
+
     // Build gRPC service.
     let cache_service = CacheService::new(agent_state);
 
@@ -170,13 +224,30 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%addr, "gRPC server starting");
 
-    // Handle graceful shutdown.
+    // Handle graceful shutdown (SIGINT + SIGTERM for K8s).
     let metadata_for_shutdown = metadata.clone();
     let shutdown = async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install CTRL+C handler");
-        tracing::info!("received CTRL+C, shutting down");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("failed to install SIGINT handler");
+
+        tokio::select! {
+            _ = sigterm.recv() => tracing::info!("received SIGTERM, shutting down"),
+            _ = sigint.recv() => tracing::info!("received SIGINT, shutting down"),
+        }
+
+        // Log final pool stats.
+        let stats = allocator_for_shutdown.stats();
+        tracing::info!(
+            total_blocks = stats.total_blocks,
+            used_blocks = stats.used_blocks,
+            free_blocks = stats.free_blocks,
+            total_bytes = stats.total_bytes,
+            used_bytes = stats.used_bytes,
+            "final pool stats at shutdown"
+        );
+
         if let Some(meta) = metadata_for_shutdown {
             if let Err(e) = meta.revoke_lease().await {
                 tracing::warn!(error = %e, "failed to revoke etcd lease on shutdown");
@@ -184,8 +255,23 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    Server::builder()
-        .add_service(CmxCacheServer::new(cache_service))
+    let svc = CmxCacheServer::new(cache_service);
+
+    let mut server = Server::builder();
+
+    // Apply concurrency limit if configured.
+    if config.agent.max_requests_per_second > 0 {
+        server = server.concurrency_limit_per_connection(
+            config.agent.max_requests_per_second as usize,
+        );
+        tracing::info!(
+            limit = config.agent.max_requests_per_second,
+            "concurrency limit enabled"
+        );
+    }
+
+    server
+        .add_service(svc)
         .serve_with_shutdown(addr, shutdown)
         .await
         .context("gRPC server failed")?;

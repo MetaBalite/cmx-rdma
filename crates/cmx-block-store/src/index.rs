@@ -37,6 +37,7 @@ impl BlockIndex {
     /// Look up blocks for a prefix hash. Returns None if not found.
     /// Touches the LRU on hit.
     pub fn lookup(&self, prefix_hash: &[u8; 16]) -> Option<IndexEntry> {
+        let _span = tracing::trace_span!("block_index_lookup").entered();
         let entry = self.map.get(prefix_hash)?;
         self.lru.touch(prefix_hash);
         Some(entry.clone())
@@ -50,6 +51,7 @@ impl BlockIndex {
         blocks: Vec<BlockLocation>,
         created_at: u64,
     ) -> Vec<[u8; 16]> {
+        let _span = tracing::trace_span!("block_index_insert").entered();
         let mut evicted = Vec::new();
 
         // Evict if at capacity (and this is a new entry, not an update).

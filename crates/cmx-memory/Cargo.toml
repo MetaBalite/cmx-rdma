@@ -16,3 +16,8 @@ gpu = []
 
 [dev-dependencies]
 proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "memory_pool_bench"
+harness = false

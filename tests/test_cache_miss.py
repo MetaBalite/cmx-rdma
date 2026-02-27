@@ -1,6 +1,8 @@
 """Integration tests for cache miss flow."""
 
 import hashlib
+
+import grpc
 import pytest
 
 
@@ -12,14 +14,24 @@ def make_hash(key: str) -> bytes:
 class TestCacheMiss:
     """Tests for the cache miss path."""
 
-    def test_lookup_nonexistent(self, agent_address):
+    def test_lookup_nonexistent(self, client):
         """Lookup for a key that was never stored returns not found."""
-        pytest.skip("Requires running cmx-agent — run with: pytest -m integration")
+        prefix = make_hash("nonexistent-key-12345")
+        result = client.lookup(prefix)
+        assert not result.found
 
-    def test_get_nonexistent(self, agent_address):
-        """Get for a missing key returns appropriate error."""
-        pytest.skip("Requires running cmx-agent — run with: pytest -m integration")
+    def test_get_nonexistent(self, client):
+        """Get for a missing key returns None or raises NOT_FOUND."""
+        prefix = make_hash("nonexistent-get-key")
+        try:
+            result = client.get(prefix)
+            assert result is None
+        except grpc.RpcError as e:
+            assert e.code() == grpc.StatusCode.NOT_FOUND
 
-    def test_delete_nonexistent(self, agent_address):
+    def test_delete_nonexistent(self, client):
         """Delete on missing key returns success=false."""
-        pytest.skip("Requires running cmx-agent — run with: pytest -m integration")
+        prefix = make_hash("nonexistent-delete-key")
+        success, blocks_freed = client.delete(prefix)
+        assert not success
+        assert blocks_freed == 0

@@ -61,16 +61,42 @@ class CmxClient:
         client = CmxClient.from_url("cmx://agent-host:50051")
     """
 
-    def __init__(self, target: str, timeout: float = 10.0):
+    def __init__(
+        self,
+        target: str,
+        timeout: float = 10.0,
+        tls_cert: str = None,
+        tls_key: str = None,
+        tls_ca: str = None,
+    ):
         """Connect to a cmx-agent.
 
         Args:
             target: gRPC target (host:port)
             timeout: Default timeout for RPCs in seconds
+            tls_cert: Path to PEM client certificate file (for mTLS)
+            tls_key: Path to PEM client private key file (for mTLS)
+            tls_ca: Path to CA certificate for server verification
         """
         self._target = target
         self._timeout = timeout
-        self._channel = grpc.insecure_channel(target)
+        if tls_cert and tls_key:
+            with open(tls_cert, 'rb') as f:
+                cert = f.read()
+            with open(tls_key, 'rb') as f:
+                key = f.read()
+            ca = None
+            if tls_ca:
+                with open(tls_ca, 'rb') as f:
+                    ca = f.read()
+            credentials = grpc.ssl_channel_credentials(
+                root_certificates=ca,
+                private_key=key,
+                certificate_chain=cert,
+            )
+            self._channel = grpc.secure_channel(target, credentials)
+        else:
+            self._channel = grpc.insecure_channel(target)
 
         # Import generated stubs
         try:
@@ -125,6 +151,23 @@ class CmxClient:
             ],
             is_local=response.is_local,
         )
+
+    def batch_lookup(
+        self,
+        prefix_hashes: list[bytes],
+        model_id: str = "",
+    ) -> list[bool]:
+        """Check N prefix hashes in one call.
+
+        Returns a list of booleans — found[i] is True if
+        prefix_hashes[i] exists in the cache.
+        """
+        request = self._pb2.BatchLookupRequest(
+            prefix_hashes=prefix_hashes,
+            model_id=model_id,
+        )
+        response = self._stub.BatchLookup(request, timeout=self._timeout)
+        return list(response.found)
 
     def store(
         self,

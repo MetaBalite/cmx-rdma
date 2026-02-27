@@ -28,6 +28,7 @@ impl BlockAllocator {
     /// Allocate a block and write data into it with a header.
     /// Returns the block location and handle, or None if the pool is exhausted.
     pub fn allocate_and_write(&self, data: &[u8]) -> Option<(BlockLocation, BlockHandle)> {
+        let _span = tracing::trace_span!("allocate_and_write").entered();
         let max_data = self.pool.block_size() - BlockHeader::SIZE;
         if data.len() > max_data {
             tracing::warn!(
@@ -63,6 +64,7 @@ impl BlockAllocator {
     /// Read data from a block, verifying CRC32C integrity.
     /// Returns the data (without header) if checksum matches.
     pub fn read_verified(&self, handle: &BlockHandle) -> Option<Vec<u8>> {
+        let _span = tracing::trace_span!("read_verified").entered();
         let block_slice = self.pool.get_slice(handle);
         let header = BlockHeader::read_from(block_slice)?;
 

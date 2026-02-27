@@ -16,6 +16,8 @@ pub struct AgentConfig {
     pub metrics: MetricsSection,
     #[serde(default)]
     pub placement: PlacementSection,
+    #[serde(default)]
+    pub tls: TlsSection,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +34,9 @@ pub struct AgentSection {
     /// Log format: "text" or "json".
     #[serde(default = "default_log_format")]
     pub log_format: String,
+    /// Maximum gRPC requests per second (0 = no limit).
+    #[serde(default)]
+    pub max_requests_per_second: u32,
 }
 
 impl Default for AgentSection {
@@ -41,6 +46,7 @@ impl Default for AgentSection {
             listen_addr: default_listen_addr(),
             log_level: default_log_level(),
             log_format: default_log_format(),
+            max_requests_per_second: 0,
         }
     }
 }
@@ -152,6 +158,22 @@ impl Default for PlacementSection {
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct TlsSection {
+    /// Enable TLS.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to PEM certificate file.
+    #[serde(default)]
+    pub cert_path: String,
+    /// Path to PEM private key file.
+    #[serde(default)]
+    pub key_path: String,
+    /// Path to CA certificate for client verification (mTLS).
+    #[serde(default)]
+    pub ca_cert_path: String,
+}
+
 fn default_listen_addr() -> String {
     "0.0.0.0:50051".into()
 }
@@ -215,6 +237,63 @@ impl AgentConfig {
             transport: TransportSection::default(),
             metrics: MetricsSection::default(),
             placement: PlacementSection::default(),
+            tls: TlsSection::default(),
+        }
+    }
+
+    /// Validate the configuration. Returns all validation errors collected.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if self.memory.block_size == 0 {
+            errors.push("memory.block_size must be > 0".into());
+        }
+        if self.memory.total_size == 0 {
+            errors.push("memory.total_size must be > 0".into());
+        }
+        if self.memory.block_size > 0 && !self.memory.total_size.is_multiple_of(self.memory.block_size) {
+            errors.push(format!(
+                "memory.total_size ({}) must be divisible by memory.block_size ({})",
+                self.memory.total_size, self.memory.block_size
+            ));
+        }
+
+        let warn = self.memory.pressure_warn;
+        let critical = self.memory.pressure_critical;
+        let reject = self.memory.pressure_reject;
+
+        for (name, val) in [
+            ("pressure_warn", warn),
+            ("pressure_critical", critical),
+            ("pressure_reject", reject),
+        ] {
+            if !(0.0..=1.0).contains(&val) {
+                errors.push(format!("memory.{name} ({val}) must be between 0.0 and 1.0"));
+            }
+        }
+
+        if warn >= critical {
+            errors.push(format!(
+                "memory.pressure_warn ({warn}) must be < memory.pressure_critical ({critical})"
+            ));
+        }
+        if critical >= reject {
+            errors.push(format!(
+                "memory.pressure_critical ({critical}) must be < memory.pressure_reject ({reject})"
+            ));
+        }
+
+        if self.agent.listen_addr.parse::<std::net::SocketAddr>().is_err() {
+            errors.push(format!(
+                "agent.listen_addr ('{}') is not a valid socket address",
+                self.agent.listen_addr
+            ));
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 
@@ -283,6 +362,73 @@ mod tests {
         assert_eq!(config.placement.vnodes_per_node, 64);
         // Defaults for missing sections
         assert_eq!(config.transport.backend, "mock");
+    }
+
+    #[test]
+    fn test_validate_default_config() {
+        let config = AgentConfig::default_config();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_zero_block_size() {
+        let mut config = AgentConfig::default_config();
+        config.memory.block_size = 0;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("block_size must be > 0")));
+    }
+
+    #[test]
+    fn test_validate_zero_total_size() {
+        let mut config = AgentConfig::default_config();
+        config.memory.total_size = 0;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("total_size must be > 0")));
+    }
+
+    #[test]
+    fn test_validate_total_not_divisible_by_block() {
+        let mut config = AgentConfig::default_config();
+        config.memory.total_size = 1000;
+        config.memory.block_size = 300;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("divisible")));
+    }
+
+    #[test]
+    fn test_validate_pressure_ordering() {
+        let mut config = AgentConfig::default_config();
+        config.memory.pressure_warn = 0.90;
+        config.memory.pressure_critical = 0.80;
+        config.memory.pressure_reject = 0.95;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("pressure_warn") && e.contains("<")));
+    }
+
+    #[test]
+    fn test_validate_pressure_out_of_range() {
+        let mut config = AgentConfig::default_config();
+        config.memory.pressure_warn = 1.5;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("pressure_warn") && e.contains("between")));
+    }
+
+    #[test]
+    fn test_validate_invalid_listen_addr() {
+        let mut config = AgentConfig::default_config();
+        config.agent.listen_addr = "not-a-socket-addr".into();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("listen_addr")));
+    }
+
+    #[test]
+    fn test_validate_collects_multiple_errors() {
+        let mut config = AgentConfig::default_config();
+        config.memory.block_size = 0;
+        config.memory.total_size = 0;
+        config.agent.listen_addr = "bad".into();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.len() >= 3);
     }
 
     #[test]

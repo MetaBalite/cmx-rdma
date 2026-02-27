@@ -20,6 +20,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 
 # gRPC
+tower = { version = "0.4", features = ["limit"] }
 tonic = "0.12"
 tonic-build = "0.12"
 prost = "0.13"
@@ -43,6 +44,7 @@ crc32fast = "1"
 # Logging / tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-flame = "0.2"
 
 # Metrics
 metrics = "0.24"
@@ -64,6 +66,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Testing
 proptest = "1"
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 # Internal crates
 cmx-proto = { path = "crates/cmx-proto" }

@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import os
 import statistics
 import sys
@@ -62,6 +63,32 @@ def run_lookup_benchmark(client, num_requests: int) -> tuple[list[float], list[f
     return hit_latencies, miss_latencies
 
 
+def run_batch_lookup_benchmark(client, num_requests: int) -> dict[int, list[float]]:
+    """Benchmark batch_lookup for various batch sizes. Returns {batch_size: [latencies_ms]}."""
+    batch_sizes = [1, 10, 50, 100]
+    results = {}
+
+    for bs in batch_sizes:
+        latencies = []
+        for i in range(num_requests):
+            # Mix of stored keys (hits) and missing keys (misses)
+            hashes = []
+            for j in range(bs):
+                if j % 2 == 0:
+                    hashes.append(make_hash(f"bench-store-{(i * bs + j) % num_requests}"))
+                else:
+                    hashes.append(make_hash(f"bench-batch-miss-{i}-{j}"))
+
+            start = time.perf_counter()
+            client.batch_lookup(hashes)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            latencies.append(elapsed_ms)
+
+        results[bs] = latencies
+
+    return results
+
+
 def print_stats(name: str, latencies: list[float]):
     """Print latency statistics."""
     if not latencies:
@@ -85,6 +112,8 @@ def main():
     parser.add_argument(
         "--data-size", type=int, default=65536, help="KV data size in bytes per request"
     )
+    parser.add_argument("--output", type=str, default=None, help="Output JSON file")
+    parser.add_argument("--model-id", type=str, default="", help="Model ID for scoped benchmarks")
     args = parser.parse_args()
 
     try:
@@ -114,6 +143,11 @@ def main():
     print_stats("lookup_hit", hit_latencies)
     print_stats("lookup_miss", miss_latencies)
 
+    print(f"\n--- Batch lookup benchmark ({args.num_requests} requests per batch size) ---")
+    batch_results = run_batch_lookup_benchmark(client, args.num_requests)
+    for bs, lats in sorted(batch_results.items()):
+        print_stats(f"batch_lookup[{bs}]", lats)
+
     # Print stats
     stats = client.stats()
     print(f"\n--- Agent stats ---")
@@ -124,6 +158,20 @@ def main():
     print(f"  evictions:     {stats.evictions}")
     print(f"  memory_used:   {stats.memory_used_bytes / 1024 / 1024:.1f} MiB")
     print(f"  memory_total:  {stats.memory_total_bytes / 1024 / 1024:.1f} MiB")
+
+    # Collect results and optionally write JSON
+    if args.output:
+        output_data = {
+            "store_latencies": store_latencies,
+            "hit_latencies": hit_latencies,
+            "miss_latencies": miss_latencies,
+            "batch_lookup_latencies": {
+                str(bs): lats for bs, lats in batch_results.items()
+            },
+        }
+        with open(args.output, "w") as f:
+            json.dump(output_data, f, indent=2)
+        print(f"\nResults written to {args.output}")
 
     client.close()
 

@@ -70,7 +70,7 @@ fn parse_prefix_hash(bytes: &[u8]) -> Result<[u8; 16], Status> {
 
 /// Build a composite index key from model_id + prefix_hash.
 /// Empty model_id = backwards-compatible (returns prefix_hash as-is).
-fn composite_key(model_id: &str, prefix_hash: &[u8; 16]) -> [u8; 16] {
+pub fn composite_key(model_id: &str, prefix_hash: &[u8; 16]) -> [u8; 16] {
     if model_id.is_empty() {
         return *prefix_hash;
     }
@@ -90,6 +90,7 @@ impl CmxCache for CacheService {
         &self,
         request: Request<LookupRequest>,
     ) -> Result<Response<LookupResponse>, Status> {
+        metrics::counter!("cmx_grpc_requests_total", "method" => "lookup").increment(1);
         let timer = Instant::now();
         let req = request.into_inner();
         let prefix_hash = parse_prefix_hash(&req.prefix_hash)?;
@@ -111,6 +112,8 @@ impl CmxCache for CacheService {
                     .collect();
 
                 metrics::histogram!("cmx_get_duration_seconds")
+                    .record(timer.elapsed().as_secs_f64());
+                metrics::histogram!("cmx_lookup_duration_seconds")
                     .record(timer.elapsed().as_secs_f64());
 
                 Ok(Response::new(LookupResponse {
@@ -134,6 +137,8 @@ impl CmxCache for CacheService {
                             }];
 
                             metrics::histogram!("cmx_get_duration_seconds")
+                                .record(timer.elapsed().as_secs_f64());
+                            metrics::histogram!("cmx_lookup_duration_seconds")
                                 .record(timer.elapsed().as_secs_f64());
 
                             return Ok(Response::new(LookupResponse {
@@ -159,6 +164,8 @@ impl CmxCache for CacheService {
                 metrics::counter!("cmx_cache_misses_total").increment(1);
                 metrics::histogram!("cmx_get_duration_seconds")
                     .record(timer.elapsed().as_secs_f64());
+                metrics::histogram!("cmx_lookup_duration_seconds")
+                    .record(timer.elapsed().as_secs_f64());
 
                 Ok(Response::new(LookupResponse {
                     found: false,
@@ -174,6 +181,7 @@ impl CmxCache for CacheService {
         &self,
         request: Request<BatchLookupRequest>,
     ) -> Result<Response<BatchLookupResponse>, Status> {
+        metrics::counter!("cmx_grpc_requests_total", "method" => "batch_lookup").increment(1);
         let timer = Instant::now();
         let req = request.into_inner();
 
@@ -217,6 +225,7 @@ impl CmxCache for CacheService {
         &self,
         request: Request<Streaming<StoreRequest>>,
     ) -> Result<Response<StoreResponse>, Status> {
+        metrics::counter!("cmx_grpc_requests_total", "method" => "store").increment(1);
         // Check memory pressure before accepting store.
         let pressure = self
             .state
@@ -256,6 +265,8 @@ impl CmxCache for CacheService {
                 None => {}
             }
         }
+
+        metrics::counter!("cmx_store_bytes_total").increment(data.len() as u64);
 
         // Allocate a block and store data.
         let (loc, _handle) = self
@@ -312,6 +323,7 @@ impl CmxCache for CacheService {
 
     #[tracing::instrument(skip(self, request), fields(method = "get"))]
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<Self::GetStream>, Status> {
+        metrics::counter!("cmx_grpc_requests_total", "method" => "get").increment(1);
         let req = request.into_inner();
         let prefix_hash = parse_prefix_hash(&req.prefix_hash)?;
         let index_key = composite_key(&req.model_id, &prefix_hash);
@@ -377,6 +389,7 @@ impl CmxCache for CacheService {
         &self,
         request: Request<DeleteRequest>,
     ) -> Result<Response<DeleteResponse>, Status> {
+        metrics::counter!("cmx_grpc_requests_total", "method" => "delete").increment(1);
         let req = request.into_inner();
         let prefix_hash = parse_prefix_hash(&req.prefix_hash)?;
 
@@ -409,6 +422,7 @@ impl CmxCache for CacheService {
         &self,
         _request: Request<StatsRequest>,
     ) -> Result<Response<StatsResponse>, Status> {
+        metrics::counter!("cmx_grpc_requests_total", "method" => "stats").increment(1);
         let pool_stats = self.allocator().stats();
         Ok(Response::new(StatsResponse {
             total_blocks: pool_stats.total_blocks as u64,
@@ -426,8 +440,14 @@ impl CmxCache for CacheService {
         &self,
         _request: Request<HealthRequest>,
     ) -> Result<Response<HealthResponse>, Status> {
+        metrics::counter!("cmx_grpc_requests_total", "method" => "health").increment(1);
+        let pressure = self
+            .state
+            .pressure_level
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let healthy = pressure < PRESSURE_REJECT;
         Ok(Response::new(HealthResponse {
-            healthy: true,
+            healthy,
             node_id: self.node_id().to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             uptime_seconds: self.start_time.elapsed().as_secs(),
