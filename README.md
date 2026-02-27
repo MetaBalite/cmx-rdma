@@ -2,7 +2,7 @@
 
 ## Context
 
-MetaBalite is building **cmx-rdma** — an open-source alternative to NVIDIA's proprietary CMX, providing high-performance distributed KV cache sharing over RDMA. It enables LLM inference nodes to share "context memory" to slash Time-to-First-Token (TTFT).
+MetaBalite is building **cmx-rdma** — an open-source, high-performance distributed KV cache sharing system over RDMA. It enables LLM inference nodes to share "context memory" to slash Time-to-First-Token (TTFT).
 
 **Deployment model**: Offered as a service on MetaBalite's own cluster. Customers consume it via APIs. This means raw performance and API design are the highest priorities.
 
@@ -12,7 +12,7 @@ MetaBalite is building **cmx-rdma** — an open-source alternative to NVIDIA's p
 
 **MVP scope**: Full cluster deployment (not a 2-node demo). Every node participates from Phase 1.
 
-**Key differentiator**: Hardware-agnostic (works without BlueField-4), open-source core, and performance-first design.
+**Key differentiator**: Hardware-agnostic (works on any RDMA-capable NIC), open-source core, and performance-first design.
 
 ---
 
