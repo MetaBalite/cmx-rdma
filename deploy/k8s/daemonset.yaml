@@ -21,7 +21,7 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: cmx-agent
-          image: ghcr.io/metabalite/cmx-agent:latest
+          image: ghcr.io/mattercore/cmx-agent:latest
           args: ["--config", "/etc/cmx/cmx-agent.toml"]
           ports:
             - containerPort: 50051
